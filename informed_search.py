@@ -1,6 +1,6 @@
 # Version 5 - FINAL: Dynamic Obstacles + Real-Time Re-planning
 # AI Dynamic Pathfinding Agent
-# Created by: Ans Rizwan (24F-0785) & Muhammad Shaheer (24F-0779)
+# Created by: Ans Rizwan (24F-0779)
 #
 # Features:
 #   • GBFS and A* with Manhattan / Euclidean heuristic toggle
