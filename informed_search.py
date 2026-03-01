@@ -1,21 +1,26 @@
-# Version 4 - Heuristic Toggle (Manhattan / Euclidean) + Metrics Dashboard
+# Version 5 - FINAL: Dynamic Obstacles + Real-Time Re-planning
 # AI Dynamic Pathfinding Agent
 # Created by: Ans Rizwan (24F-0785) & Muhammad Shaheer (24F-0779)
-# This version lets the user switch between Manhattan and Euclidean heuristics
-# and shows a full real-time metrics dashboard.
+#
+# Features:
+#   • GBFS and A* with Manhattan / Euclidean heuristic toggle
+#   • Dynamic Mode: obstacles spawn randomly while agent moves
+#   • Re-planning: if a new wall blocks the path, agent recalculates from current position
+#   • Full metrics dashboard: nodes visited, path cost, time, re-plans
+#   • Animated step-by-step visualization
 
 import tkinter as tk
-from tkinter import ttk
 import heapq, random, time, math
 
 # ─────────────────────────────────────────
-#  SETTINGS
+#  SETTINGS  (tweak freely)
 # ─────────────────────────────────────────
-GRID_ROWS  = 15
-GRID_COLS  = 15
-CELL_SIZE  = 40
-PADDING    = 10
-ANIM_DELAY = 25
+GRID_ROWS      = 15
+GRID_COLS      = 15
+CELL_SIZE      = 40
+PADDING        = 10
+MOVE_DELAY     = 120     # ms between each agent step
+SPAWN_PROB     = 0.06    # probability a new wall spawns each agent step
 
 COLOR_EMPTY    = "#FFFFFF"
 COLOR_WALL     = "#2C3E50"
@@ -24,6 +29,7 @@ COLOR_GOAL     = "#E74C3C"
 COLOR_FRONTIER = "#F1C40F"
 COLOR_VISITED  = "#3498DB"
 COLOR_PATH     = "#2ECC71"
+COLOR_AGENT    = "#9B59B6"   # purple – current agent position
 
 
 # ─────────────────────────────────────────
@@ -39,18 +45,22 @@ def euclidean(a, b):
 
 
 # ─────────────────────────────────────────
-#  ALGORITHMS
+#  SEARCH ALGORITHMS
 # ─────────────────────────────────────────
 def gbfs(grid, start, goal, h_fn):
-    """Greedy Best-First Search  f(n) = h(n)"""
+    """
+    Greedy Best-First Search
+    f(n) = h(n)  — only heuristic, no actual cost
+    Fast, but path may not be optimal.
+    """
     heap = [(h_fn(start, goal), start)]
     came_from = {start: None}
-    visited, frontiers = [], []
+    visited   = []
 
     while heap:
         _, cur = heapq.heappop(heap)
         if cur == goal:
-            return _reconstruct(came_from, goal), visited, frontiers
+            return _reconstruct(came_from, goal), visited
         if cur in visited:
             continue
         visited.append(cur)
@@ -58,22 +68,25 @@ def gbfs(grid, start, goal, h_fn):
             if nb not in came_from:
                 came_from[nb] = cur
                 heapq.heappush(heap, (h_fn(nb, goal), nb))
-        frontiers.append([x[1] for x in heap])
 
-    return None, visited, frontiers
+    return None, visited
 
 
 def astar(grid, start, goal, h_fn):
-    """A* Search  f(n) = g(n) + h(n)"""
-    heap = [(h_fn(start, goal), 0, start)]
+    """
+    A* Search
+    f(n) = g(n) + h(n)  — actual cost + heuristic
+    Guaranteed to find the shortest path.
+    """
+    heap      = [(h_fn(start, goal), 0, start)]
     came_from = {start: None}
     g_cost    = {start: 0}
-    visited, frontiers = [], []
+    visited   = []
 
     while heap:
         _, g, cur = heapq.heappop(heap)
         if cur == goal:
-            return _reconstruct(came_from, goal), visited, frontiers
+            return _reconstruct(came_from, goal), visited
         if cur in visited:
             continue
         visited.append(cur)
@@ -83,9 +96,8 @@ def astar(grid, start, goal, h_fn):
                 g_cost[nb]    = ng
                 came_from[nb] = cur
                 heapq.heappush(heap, (ng + h_fn(nb, goal), ng, nb))
-        frontiers.append([x[2] for x in heap])
 
-    return None, visited, frontiers
+    return None, visited
 
 
 # ─────────────────────────────────────────
@@ -108,64 +120,88 @@ def _reconstruct(came_from, goal):
 
 
 # ─────────────────────────────────────────
-#  GUI APPLICATION
+#  MAIN APPLICATION
 # ─────────────────────────────────────────
 class PathfinderApp:
 
     def __init__(self, root):
         self.root  = root
-        self.root.title("AI Dynamic Pathfinder  –  v4 Heuristic Toggle  –  24F-0785 & 24F-0779")
+        self.root.title("AI Dynamic Pathfinder  –  FINAL v5  –  24F-0785 & 24F-0779")
         self.root.resizable(False, False)
 
         self.grid  = [[None]*GRID_COLS for _ in range(GRID_ROWS)]
         self.start = (0, 0)
         self.goal  = (GRID_ROWS-1, GRID_COLS-1)
-        self._cell_colors = {}
-        self._anim_steps  = []
-        self._anim_index  = 0
-        self._path_cells  = []
+
+        # Animation / agent state
+        self._cell_colors  = {}     # (r,c) → color
+        self._path         = []     # remaining path for agent
+        self._path_index   = 0      # next step index
+        self._agent_pos    = None   # current agent cell
+        self._running      = False  # is agent moving?
+
+        # Cumulative metrics
+        self._total_visited = 0
+        self._total_cost    = 0
+        self._total_replans = 0
+        self._start_time    = 0
 
         self._build_ui()
         self._draw_grid()
 
-    # ── UI ────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════
+    #  UI CONSTRUCTION
+    # ══════════════════════════════════════
     def _build_ui(self):
         cw = GRID_COLS*CELL_SIZE + 2*PADDING
         ch = GRID_ROWS*CELL_SIZE + 2*PADDING
 
+        # Canvas
         self.canvas = tk.Canvas(self.root, width=cw, height=ch,
                                 bg="#ECF0F1", highlightthickness=0)
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
         self.canvas.bind("<Button-1>", self._on_click)
 
+        # Control panel
         ctrl = tk.Frame(self.root, bg="#ECF0F1", padx=10, pady=10)
         ctrl.grid(row=0, column=1, sticky="n")
 
-        tk.Label(ctrl, text="AI Pathfinder v4", font=("Arial",14,"bold"),
-                 bg="#ECF0F1").pack(pady=(0,8))
+        tk.Label(ctrl, text="AI Pathfinder", font=("Arial",15,"bold"),
+                 bg="#ECF0F1", fg="#2C3E50").pack(pady=(0,4))
+        tk.Label(ctrl, text="24F-0785 · 24F-0779", font=("Arial",8),
+                 bg="#ECF0F1", fg="#7F8C8D").pack(pady=(0,10))
 
-        # ── Algorithm selector ──
+        # ── Algorithm ──
         tk.Label(ctrl, text="Algorithm", font=("Arial",10,"bold"),
                  bg="#ECF0F1").pack(anchor="w")
         self.algo_var = tk.StringVar(value="A*")
-        for name in ("GBFS", "A*"):
+        for name in ("GBFS","A*"):
             tk.Radiobutton(ctrl, text=name, variable=self.algo_var,
-                           value=name, bg="#ECF0F1",
-                           font=("Arial",9)).pack(anchor="w")
+                           value=name, bg="#ECF0F1", font=("Arial",9)).pack(anchor="w")
 
-        # ── Heuristic selector ──
+        # ── Heuristic ──
         tk.Label(ctrl, text="Heuristic", font=("Arial",10,"bold"),
                  bg="#ECF0F1").pack(anchor="w", pady=(8,0))
         self.heur_var = tk.StringVar(value="Manhattan")
-        for name in ("Manhattan", "Euclidean"):
+        for name in ("Manhattan","Euclidean"):
             tk.Radiobutton(ctrl, text=name, variable=self.heur_var,
-                           value=name, bg="#ECF0F1",
-                           font=("Arial",9)).pack(anchor="w")
+                           value=name, bg="#ECF0F1", font=("Arial",9)).pack(anchor="w")
+
+        # ── Dynamic Mode ──
+        tk.Label(ctrl, text="Dynamic Mode", font=("Arial",10,"bold"),
+                 bg="#ECF0F1").pack(anchor="w", pady=(8,0))
+        self.dynamic_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(ctrl, text="Enable dynamic obstacles",
+                       variable=self.dynamic_var, bg="#ECF0F1",
+                       font=("Arial",9)).pack(anchor="w")
 
         # ── Buttons ──
-        tk.Button(ctrl, text="▶  Run Search", width=18,
+        tk.Button(ctrl, text="▶  Start", width=18,
                   bg="#27AE60", fg="white", font=("Arial",10,"bold"),
-                  command=self._run).pack(pady=(12,3))
+                  command=self._start_search).pack(pady=(12,3))
+        tk.Button(ctrl, text="⏹  Stop", width=18,
+                  bg="#E67E22", fg="white", font=("Arial",10,"bold"),
+                  command=self._stop).pack(pady=3)
         tk.Button(ctrl, text="Random Walls", width=18,
                   bg="#8E44AD", fg="white", font=("Arial",10,"bold"),
                   command=self._random_walls).pack(pady=3)
@@ -174,40 +210,46 @@ class PathfinderApp:
                   command=self._reset_grid).pack(pady=3)
 
         # ── Status ──
-        self.status_var = tk.StringVar(value="Select algorithm & heuristic, then run.")
+        self.status_var = tk.StringVar(value="Set up grid and press Start.")
         tk.Label(ctrl, textvariable=self.status_var, bg="#ECF0F1",
                  font=("Arial",9), wraplength=165, justify="left",
                  fg="#2C3E50").pack(pady=(10,0))
 
         # ── Metrics Dashboard ──
         tk.Label(ctrl, text="📊 Metrics Dashboard", font=("Arial",11,"bold"),
-                 bg="#ECF0F1").pack(pady=(18,5))
+                 bg="#ECF0F1").pack(pady=(16,5))
 
-        metrics_frame = tk.Frame(ctrl, bg="#D5DBDB", relief="groove", bd=1)
-        metrics_frame.pack(fill="x", padx=2)
+        mf = tk.Frame(ctrl, bg="#D5DBDB", relief="groove", bd=1)
+        mf.pack(fill="x", padx=2)
 
-        self.m_algo    = tk.StringVar(value="Algorithm:      —")
-        self.m_heur    = tk.StringVar(value="Heuristic:      —")
-        self.m_visited = tk.StringVar(value="Nodes visited:  —")
-        self.m_cost    = tk.StringVar(value="Path cost:      —")
-        self.m_time    = tk.StringVar(value="Time (ms):      —")
+        self.m_algo    = tk.StringVar(value="Algorithm:     —")
+        self.m_heur    = tk.StringVar(value="Heuristic:     —")
+        self.m_visited = tk.StringVar(value="Nodes visited: —")
+        self.m_cost    = tk.StringVar(value="Path cost:     —")
+        self.m_time    = tk.StringVar(value="Time (ms):     —")
+        self.m_replans = tk.StringVar(value="Re-plans:      —")
 
-        for v in (self.m_algo, self.m_heur, self.m_visited, self.m_cost, self.m_time):
-            tk.Label(metrics_frame, textvariable=v, bg="#D5DBDB",
+        for v in (self.m_algo, self.m_heur, self.m_visited,
+                  self.m_cost, self.m_time, self.m_replans):
+            tk.Label(mf, textvariable=v, bg="#D5DBDB",
                      font=("Courier",9), anchor="w", padx=4).pack(fill="x")
 
         # ── Legend ──
         tk.Label(ctrl, text="Legend", font=("Arial",11,"bold"),
-                 bg="#ECF0F1").pack(pady=(16,4))
+                 bg="#ECF0F1").pack(pady=(14,4))
         for color, label in [
-            (COLOR_START,"Start"),(COLOR_GOAL,"Goal"),(COLOR_WALL,"Wall"),
-            (COLOR_FRONTIER,"Frontier"),(COLOR_VISITED,"Visited"),(COLOR_PATH,"Final path"),
+            (COLOR_START,  "Start"),   (COLOR_GOAL,  "Goal"),
+            (COLOR_WALL,   "Wall"),    (COLOR_AGENT, "Agent"),
+            (COLOR_PATH,   "Path"),    (COLOR_VISITED,"Visited"),
+            (COLOR_FRONTIER,"Frontier"),
         ]:
             row = tk.Frame(ctrl, bg="#ECF0F1"); row.pack(anchor="w")
             tk.Label(row, bg=color, width=2, relief="solid").pack(side="left", padx=(0,6))
             tk.Label(row, text=label, bg="#ECF0F1", font=("Arial",9)).pack(side="left")
 
-    # ── Drawing ───────────────────────────────────────────────────────────
+    # ══════════════════════════════════════
+    #  DRAWING
+    # ══════════════════════════════════════
     def _draw_grid(self):
         self.canvas.delete("all")
         for r in range(GRID_ROWS):
@@ -217,73 +259,189 @@ class PathfinderApp:
     def _draw_cell(self, r, c):
         x1=PADDING+c*CELL_SIZE; y1=PADDING+r*CELL_SIZE
         x2=x1+CELL_SIZE;        y2=y1+CELL_SIZE
-        if (r,c)==self.start:            color,text=COLOR_START,"S"
-        elif (r,c)==self.goal:           color,text=COLOR_GOAL, "G"
-        elif self.grid[r][c]=="wall":    color,text=COLOR_WALL, ""
-        elif (r,c) in self._cell_colors: color,text=self._cell_colors[(r,c)],""
-        else:                            color,text=COLOR_EMPTY,""
-        self.canvas.create_rectangle(x1,y1,x2,y2,fill=color,outline="#BDC3C7")
+
+        pos = (r, c)
+        if pos == self._agent_pos:          color, text = COLOR_AGENT, "A"
+        elif pos == self.start:             color, text = COLOR_START, "S"
+        elif pos == self.goal:              color, text = COLOR_GOAL,  "G"
+        elif self.grid[r][c] == "wall":     color, text = COLOR_WALL,  ""
+        elif pos in self._cell_colors:      color, text = self._cell_colors[pos], ""
+        else:                               color, text = COLOR_EMPTY, ""
+
+        self.canvas.create_rectangle(x1,y1,x2,y2, fill=color, outline="#BDC3C7")
         if text:
             self.canvas.create_text((x1+x2)//2,(y1+y2)//2,
-                                    text=text,font=("Arial",12,"bold"),fill="white")
+                                    text=text, font=("Arial",11,"bold"), fill="white")
 
-    # ── Run ───────────────────────────────────────────────────────────────
-    def _run(self):
-        self._cell_colors.clear(); self._draw_grid()
+    # ══════════════════════════════════════
+    #  SEARCH + AGENT MOVEMENT
+    # ══════════════════════════════════════
+    def _get_algo_and_heuristic(self):
+        h_fn    = manhattan if self.heur_var.get()=="Manhattan" else euclidean
+        algo_fn = gbfs      if self.algo_var.get()=="GBFS"      else astar
+        return algo_fn, h_fn
 
-        algo_name = self.algo_var.get()
-        heur_name = self.heur_var.get()
-        h_fn      = manhattan if heur_name == "Manhattan" else euclidean
-        algo_fn   = gbfs if algo_name == "GBFS" else astar
+    def _start_search(self):
+        """Initial search from start to goal, then begin agent movement."""
+        self._running = True
+        self._cell_colors.clear()
+        self._total_visited = 0
+        self._total_cost    = 0
+        self._total_replans = 0
+        self._start_time    = time.time()
 
-        t0 = time.time()
-        path, visited, frontiers = algo_fn(self.grid, self.start, self.goal, h_fn)
-        elapsed = (time.time()-t0)*1000
+        algo_fn, h_fn = self._get_algo_and_heuristic()
+        path, visited = algo_fn(self.grid, self.start, self.goal, h_fn)
 
         if path is None:
-            self.status_var.set("No path found!"); return
+            self.status_var.set("No path found! Add fewer walls.")
+            return
 
-        self.m_algo.set(   f"Algorithm:      {algo_name}")
-        self.m_heur.set(   f"Heuristic:      {heur_name}")
-        self.m_visited.set(f"Nodes visited:  {len(visited)}")
-        self.m_cost.set(   f"Path cost:      {len(path)-1}")
-        self.m_time.set(   f"Time (ms):      {elapsed:.3f}")
-        self.status_var.set(f"{algo_name} + {heur_name} done!")
+        self._total_visited += len(visited)
+        self._path           = path
+        self._path_index     = 1          # index 0 is start
+        self._agent_pos      = self.start
 
-        self._anim_steps = list(zip(visited, frontiers+[[]]))
-        self._path_cells = path
-        self._anim_index = 0
-        self._animate()
+        # Color visited and path
+        for cell in visited:
+            if cell not in (self.start, self.goal):
+                self._cell_colors[cell] = COLOR_VISITED
+        for cell in path:
+            if cell not in (self.start, self.goal):
+                self._cell_colors[cell] = COLOR_PATH
 
-    def _animate(self):
-        if self._anim_index < len(self._anim_steps):
-            node, frontier = self._anim_steps[self._anim_index]
-            if node not in (self.start,self.goal):
-                self._cell_colors[node]=COLOR_VISITED; self._draw_cell(*node)
-            for fn in frontier:
-                if fn not in (self.start,self.goal) and fn not in self._cell_colors:
-                    self._cell_colors[fn]=COLOR_FRONTIER; self._draw_cell(*fn)
-            self._anim_index+=1
-            self.root.after(ANIM_DELAY, self._animate)
-        else:
-            for cell in self._path_cells:
-                if cell not in (self.start,self.goal):
-                    self._cell_colors[cell]=COLOR_PATH; self._draw_cell(*cell)
+        self.m_algo.set(   f"Algorithm:     {self.algo_var.get()}")
+        self.m_heur.set(   f"Heuristic:     {self.heur_var.get()}")
+        self._update_metrics()
+        self._draw_grid()
+        self.status_var.set("Agent moving...")
+        self.root.after(MOVE_DELAY, self._step_agent)
 
-    # ── Interaction ───────────────────────────────────────────────────────
+    def _step_agent(self):
+        """Move agent one step along the current path."""
+        if not self._running:
+            return
+
+        if self._path_index >= len(self._path):
+            # Reached goal
+            self._agent_pos = self.goal
+            elapsed = (time.time()-self._start_time)*1000
+            self.m_time.set(f"Time (ms):     {elapsed:.1f}")
+            self.status_var.set("✅ Goal reached!")
+            self._running = False
+            self._draw_grid()
+            return
+
+        # ── Dynamic: maybe spawn a new wall ──
+        if self.dynamic_var.get():
+            self._try_spawn_obstacle()
+
+        # ── Check if next step is still clear ──
+        next_cell = self._path[self._path_index]
+        if self.grid[next_cell[0]][next_cell[1]] == "wall":
+            # Path is blocked — re-plan from current position
+            self._replan()
+            return
+
+        # ── Move agent ──
+        prev = self._agent_pos
+        self._agent_pos = next_cell
+        self._path_index += 1
+
+        # Repaint the previous cell (leave it as visited)
+        if prev not in (self.start, self.goal):
+            self._cell_colors[prev] = COLOR_VISITED
+        self._draw_cell(*prev)
+        self._draw_cell(*self._agent_pos)
+
+        self._total_cost += 1
+        self._update_metrics()
+        self.root.after(MOVE_DELAY, self._step_agent)
+
+    def _try_spawn_obstacle(self):
+        """Randomly place a new wall somewhere on the grid."""
+        if random.random() > SPAWN_PROB:
+            return
+        # Pick a random empty cell that is NOT on the current planned path or key positions
+        forbidden = set(self._path) | {self.start, self.goal, self._agent_pos}
+        candidates = [
+            (r, c)
+            for r in range(GRID_ROWS) for c in range(GRID_COLS)
+            if self.grid[r][c] is None and (r, c) not in forbidden
+        ]
+        if candidates:
+            r, c = random.choice(candidates)
+            self.grid[r][c] = "wall"
+            self._cell_colors.pop((r, c), None)
+            self._draw_cell(r, c)
+
+    def _replan(self):
+        """Re-calculate path from agent's current position."""
+        self._total_replans += 1
+        algo_fn, h_fn = self._get_algo_and_heuristic()
+        new_path, visited = algo_fn(self.grid, self._agent_pos, self.goal, h_fn)
+
+        self._total_visited += len(visited)
+
+        if new_path is None:
+            self.status_var.set("⚠️ Path blocked! No re-route possible.")
+            self._running = False
+            return
+
+        # Clear old path colors, draw new ones
+        for cell in self._path:
+            if cell not in (self.start, self.goal, self._agent_pos):
+                self._cell_colors.pop(cell, None)
+
+        for cell in new_path:
+            if cell not in (self.start, self.goal):
+                self._cell_colors[cell] = COLOR_PATH
+
+        self._path       = new_path
+        self._path_index = 1
+        self._update_metrics()
+        self._draw_grid()
+        self.status_var.set(f"🔄 Re-planned! (×{self._total_replans})")
+        self.root.after(MOVE_DELAY, self._step_agent)
+
+    def _update_metrics(self):
+        elapsed = (time.time()-self._start_time)*1000
+        self.m_visited.set(f"Nodes visited: {self._total_visited}")
+        self.m_cost.set(   f"Path cost:     {self._total_cost}")
+        self.m_time.set(   f"Time (ms):     {elapsed:.1f}")
+        self.m_replans.set(f"Re-plans:      {self._total_replans}")
+
+    # ══════════════════════════════════════
+    #  CONTROLS
+    # ══════════════════════════════════════
+    def _stop(self):
+        self._running = False
+        self.status_var.set("Stopped.")
+
     def _on_click(self, event):
+        if self._running:
+            return    # don't allow editing while agent is moving
         c=(event.x-PADDING)//CELL_SIZE; r=(event.y-PADDING)//CELL_SIZE
         if not(0<=r<GRID_ROWS and 0<=c<GRID_COLS): return
-        if (r,c) in (self.start,self.goal): return
-        self.grid[r][c]=None if self.grid[r][c]=="wall" else "wall"
-        self._draw_cell(r,c)
+        if (r,c) in (self.start, self.goal): return
+        self.grid[r][c] = None if self.grid[r][c]=="wall" else "wall"
+        self._draw_cell(r, c)
 
     def _reset_grid(self):
-        self.grid=[[None]*GRID_COLS for _ in range(GRID_ROWS)]
+        self._running = False
+        self._agent_pos = None
+        self.grid = [[None]*GRID_COLS for _ in range(GRID_ROWS)]
         self._cell_colors.clear()
-        for v,default in [(self.m_algo,"Algorithm:      —"),(self.m_heur,"Heuristic:      —"),
-                           (self.m_visited,"Nodes visited:  —"),(self.m_cost,"Path cost:      —"),
-                           (self.m_time,"Time (ms):      —")]:
+        self._path = []; self._path_index = 0
+        self._total_visited = self._total_cost = self._total_replans = 0
+        for v, default in [
+            (self.m_algo,   "Algorithm:     —"),
+            (self.m_heur,   "Heuristic:     —"),
+            (self.m_visited,"Nodes visited: —"),
+            (self.m_cost,   "Path cost:     —"),
+            (self.m_time,   "Time (ms):     —"),
+            (self.m_replans,"Re-plans:      —"),
+        ]:
             v.set(default)
         self.status_var.set("Grid reset.")
         self._draw_grid()
@@ -297,6 +455,9 @@ class PathfinderApp:
         self._draw_grid()
 
 
+# ─────────────────────────────────────────
+#  ENTRY POINT
+# ─────────────────────────────────────────
 if __name__ == "__main__":
     root = tk.Tk()
     PathfinderApp(root)
