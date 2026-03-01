@@ -2,7 +2,7 @@
 
 > A real-time grid-based pathfinding visualizer implementing Informed Search Algorithms with dynamic obstacle spawning and automatic re-planning.
 
-**Created by:** Ans Rizwan (24F-0785) & Muhammad Shaheer (24F-0779)
+**Created by:** Ans Rizwan (24F-0779)
 **Course:** Artificial Intelligence — Assignment #01
 
 ---
